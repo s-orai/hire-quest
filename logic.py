@@ -1,7 +1,4 @@
-from ctypes import Array
-from sqlite3 import paramstyle
 import requests
-from dotenv import load_dotenv
 import pandas as pd
 import json
 import streamlit as st
