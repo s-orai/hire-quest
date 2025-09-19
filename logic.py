@@ -111,6 +111,22 @@ def create_job_df(json_data):
     flat_data = [flatten_json(d) for d in json_data]
     df = pd.DataFrame(flat_data)
 
+    # 抽出項目を絞り込み
+    df = df[["id", "name", "company.name", "minimumQualification", "occupations.main", "addresses.0.prefecture", "expectedAnnualSalary.min", "expectedAnnualSalary.max", "jobDescriptions"]]
+
+    # 項目名を変更
+    df = df.rename(columns={
+        "id": "求人ID",
+        "name": "求人名",
+        "company.name": "募集企業名",
+        "minimumQualification": "応募必須条件",
+        "occupations.main": "職種",
+        "addresses.0.prefecture": "勤務地",
+        "expectedAnnualSalary.min": "年収下限",
+        "expectedAnnualSalary.max": "年収上限",
+        "jobDescriptions": "仕事内容"
+    })
+
     return df
 
 def job_count(token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories):
