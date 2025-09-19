@@ -1,7 +1,7 @@
 import streamlit as st
 from st_ant_tree import st_ant_tree
 from definitions import keyword_category_map, keyword_option_map, prefectures, job_categories_tree
-from logic import login_to_api, job_search, create_job_list, job_count, create_job_df
+from logic import login_to_api, job_search, job_count, create_job_df
 from import_csv import import_to_spreadsheet
 
 st.title('Job Search App')
@@ -35,6 +35,7 @@ selected_categories = st_ant_tree(
     treeCheckable=True,
     allowClear=True
 )
+
 token = login_to_api()
 if token:
     try:
@@ -49,10 +50,8 @@ if st.button('求人を検索'):
         job_data = job_search(token, keyword, keyword_category, keyword_option, min_salary, max_salary, location_values, selected_categories)
         if job_data:
             st.write("求人データ取得成功！")
-            create_job_list(job_data)
             df = create_job_df(job_data)
             spreadsheet_url = import_to_spreadsheet(df)
-            print(spreadsheet_url)
             st.write(f"作成したシート：{spreadsheet_url}")
         elif len(job_data) < 1:
             st.write("検索結果が0件でした")
