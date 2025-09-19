@@ -3,3 +3,10 @@ dotenv
 pandas
 streamlit
 streamlit-authenticator
+st-ant-tree
+gspread
+gspread_dataframe
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
