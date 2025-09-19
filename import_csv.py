@@ -1,4 +1,3 @@
-import csv
 import datetime
 import streamlit as st
 import gspread
