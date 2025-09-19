@@ -36,7 +36,7 @@ def login_to_api():
 
 def job_search(token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories):
     """
-    Searches for jobs using the API and returns the job data.
+    Searches for jobs using the API and returns all job data across all pages.
     """
 
     headers = {
@@ -45,38 +45,47 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
 
     qjson = {"option": keyword_category, "keyword": keyword, "logicType": keyword_option}
 
-    params = [
-      ("limit", 25),
-      ("offset", 0),
-      ("order", "desc"),
-      ("orderBy", "recommendScore"),
-      ("page", 1),
-      ("qJson", json.dumps(qjson, ensure_ascii=False)),
-      ("selectionDaysIncludingDuringMeasurement", "true"),
-      ("annualSalary.max", max_salary),
-      ("annualSalary.min", min_salary)
-    ]
+    all_jobs = []
+    offset = 0
+    limit = 25  # 1ページあたりの取得件数
 
-    for loc in desired_locations:
-      params.append(("prefectures", loc),)
+    while True:
+        params = [
+          ("limit", limit),
+          ("offset", offset),
+          ("order", "desc"),
+          ("orderBy", "recommendScore"),
+          ("page", (offset // limit) + 1),
+          ("qJson", json.dumps(qjson, ensure_ascii=False)),
+          ("selectionDaysIncludingDuringMeasurement", "true"),
+          ("annualSalary.max", max_salary),
+          ("annualSalary.min", min_salary)
+        ]
 
-    if categories: 
-        for cat in categories:
-          params.append(("occupations", cat),)
+        for loc in desired_locations:
+          params.append(("prefectures", loc),)
 
-    # リクエスト送信
-    response = requests.get(api_job_serach_url, headers=headers, params=params)
+        if categories:
+            for cat in categories:
+              params.append(("occupations", cat),)
 
-    # ステータスコード確認
-    print("Status Code:", response.status_code)
+        # リクエスト送信
+        response = requests.get(api_job_serach_url, headers=headers, params=params)
+
+        # ステータスコード確認
+        print("Status Code:", response.status_code)
 
         # JSONデータを取得
-    if response.status_code == 200 or response.status_code == 201:
-        data = response.json()["jobs"]
-        return data
-    else:
-        print("求人取得に失敗しました。Error:", response.text)
-        exit(1) # Stop execution on job search failure
+        if response.status_code == 200 or response.status_code == 201:
+            data = response.json()["jobs"]
+            if not data:
+                break  # データがもうない場合はループを終了
+            all_jobs.extend(data)
+            offset += limit
+        else:
+            print("求人取得に失敗しました。Error:", response.text)
+            exit(1) # Stop execution on job search failure
+    return all_jobs
 
 # 再帰的にフラット化する関数
 def flatten_json(y, prefix=''):
@@ -90,23 +99,6 @@ def flatten_json(y, prefix=''):
     else:
         out[prefix[:-1]] = y  # 最後のドットを除去
     return out
-
-
-def create_job_list(json_data):
-    """
-    Creates a job list from the JSON data.
-    """
-    if not json_data:
-        print("Error: No job data to process. Exiting.")
-        exit(1)
-    # JSONリストをフラット化
-    flat_data = [flatten_json(d) for d in json_data]
-    df = pd.DataFrame(flat_data)
-
-    # CSV に書き出す
-    df.to_csv("output.csv", index=False, encoding="utf-8")
-
-    print("output.csv に出力しました")
 
 def create_job_df(json_data):
     """
@@ -142,7 +134,7 @@ def job_count(token, keyword, keyword_category, keyword_option, min_salary, max_
     for loc in desired_locations:
       params.append(("prefectures", loc),)
 
-    if categories: 
+    if categories:
         for cat in categories:
           params.append(("occupations", cat),)
 
@@ -155,25 +147,7 @@ def job_count(token, keyword, keyword_category, keyword_option, min_salary, max_
         # JSONデータを取得
     if response.status_code == 200 or response.status_code == 201:
         data = response.json()["total"]
-        print(data)
         return data
     else:
         print("求人取得に失敗しました。Error:", response.text)
         exit(1) # Stop execution on job search failure
-
-
-if __name__ == "__main__":
-    token = login_to_api(login_email, login_password)
-
-    if token is None:
-        print("Error: Token is None. Exiting.")
-        exit(1)
-
-    json_data = job_search(token)
-
-    if json_data is None:
-        print("Error: Job search data is None. Exiting.")
-        exit(1)
-
-    create_job_list(json_data)
-
