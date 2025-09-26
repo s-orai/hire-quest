@@ -35,7 +35,7 @@ def login_to_api():
         print("ログインに失敗しました。Error:", response.text)
         exit(1) # Stop execution on login failure
 
-def job_search(token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories):
+def job_search(token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories, holidays, works):
     """
     Searches for jobs using the API and returns all job data across all pages.
     """
@@ -52,23 +52,30 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
 
     while True:
         params = [
-          ("limit", limit),
-          ("offset", offset),
-          ("order", "desc"),
-          ("orderBy", "recommendScore"),
-          ("page", (offset // limit) + 1),
-          ("qJson", json.dumps(qjson, ensure_ascii=False)),
-          ("selectionDaysIncludingDuringMeasurement", "true"),
-          ("annualSalary.max", max_salary),
-          ("annualSalary.min", min_salary)
+            ("limit", limit),
+            ("offset", offset),
+            ("order", "desc"),
+            ("orderBy", "recommendScore"),
+            ("page", (offset // limit) + 1),
+            ("qJson", json.dumps(qjson, ensure_ascii=False)),
+            ("selectionDaysIncludingDuringMeasurement", "true"),
+            ("annualSalary.max", max_salary),
+            ("annualSalary.min", min_salary),
+            ("commissionFeePercentage", 2)
         ]
 
         for loc in desired_locations:
-          params.append(("prefectures", loc),)
+            params.append(("prefectures", loc),)
+
+        for loc in holidays:
+            params.append(("holidays", loc),)
+
+        for loc in works:
+            params.append(("workEnvironments", loc),)
 
         if categories:
             for cat in categories:
-              params.append(("occupations", cat),)
+                params.append(("occupations", cat),)
 
         # リクエスト送信
         response = requests.get(api_job_serach_url, headers=headers, params=params)
@@ -94,8 +101,8 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
         response = requests.get(api_job_serach_url, headers=headers, params=[("id", job_id)])
 
         if response.status_code != 200 and response.status_code != 201:
-          print(f"求人取得に失敗しました。求人ID: {job_id}, Error:{response.text}")
-          continue
+            print(f"求人取得に失敗しました。求人ID: {job_id}, Error:{response.text}")
+            continue
         job_details.append(response.json())
 
     return job_details
@@ -162,7 +169,7 @@ def create_job_df(json_data):
 
     return df
 
-def job_count(token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories):
+def job_count(token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories, holidays, works):
     """
     Searches for jobs using the API and returns the job count.
     """
@@ -174,18 +181,25 @@ def job_count(token, keyword, keyword_category, keyword_option, min_salary, max_
     qjson = {"option": keyword_category, "keyword": keyword, "logicType": keyword_option}
 
     params = [
-      ("qJson", json.dumps(qjson, ensure_ascii=False)),
-      ("selectionDaysIncludingDuringMeasurement", "true"),
-      ("annualSalary.max", max_salary),
-      ("annualSalary.min", min_salary),
+        ("qJson", json.dumps(qjson, ensure_ascii=False)),
+        ("selectionDaysIncludingDuringMeasurement", "true"),
+        ("annualSalary.max", max_salary),
+        ("annualSalary.min", min_salary),
+        ("commissionFeePercentage", 2),
     ]
 
     for loc in desired_locations:
-      params.append(("prefectures", loc),)
+        params.append(("prefectures", loc),)
+
+    for loc in holidays:
+        params.append(("holidays", loc),)
+
+    for loc in works:
+        params.append(("workEnvironments", loc),)
 
     if categories:
         for cat in categories:
-          params.append(("occupations", cat),)
+            params.append(("occupations", cat),)
 
     # リクエスト送信
     response = requests.get(api_job_serach_url, headers=headers, params=params)
@@ -193,7 +207,7 @@ def job_count(token, keyword, keyword_category, keyword_option, min_salary, max_
     # ステータスコード確認
     print("Status Code:", response.status_code)
 
-        # JSONデータを取得
+    # JSONデータを取得
     if response.status_code == 200 or response.status_code == 201:
         data = response.json()["total"]
         return data

@@ -1,6 +1,6 @@
 import streamlit as st
 from st_ant_tree import st_ant_tree
-from definitions import keyword_category_map, keyword_option_map, prefectures, job_categories_tree
+from definitions import keyword_category_map, keyword_option_map, prefectures, job_categories_tree, holidays, work_environment
 from logic import login_to_api, job_search, job_count, create_job_df
 from import_csv import import_to_spreadsheet
 
@@ -36,11 +36,18 @@ def show_search_console():
       treeCheckable=True,
       allowClear=True
   )
+  # 休日
+  selected_holidays = st.multiselect('休日', list(holidays.keys()))
+  holiday_values = [holidays[loc] for loc in selected_holidays]
+
+  # 労働環境
+  selected_works = st.multiselect('労働環境', list(work_environment.keys()))
+  work_values = [work_environment[loc] for loc in selected_works]
   
   token = login_to_api()
   if token:
       try:
-          count = job_count(token, keyword, keyword_category, keyword_option, min_salary, max_salary, location_values, selected_categories)
+          count = job_count(token, keyword, keyword_category, keyword_option, min_salary, max_salary, location_values, selected_categories, holiday_values, work_values)
           st.write(f"検索結果数: {count}件")
       except Exception as e:
           st.write("検索結果数の取得に失敗しました。")
@@ -48,7 +55,7 @@ def show_search_console():
   # 検索ボタン
   if st.button('求人を検索'):
       if token:
-          job_data = job_search(token, keyword, keyword_category, keyword_option, min_salary, max_salary, location_values, selected_categories)
+          job_data = job_search(token, keyword, keyword_category, keyword_option, min_salary, max_salary, location_values, selected_categories, holiday_values, work_values)
           if job_data:
               st.write("求人データ取得成功！")
               df = create_job_df(job_data)
