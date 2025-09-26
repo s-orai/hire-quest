@@ -61,7 +61,7 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
             ("selectionDaysIncludingDuringMeasurement", "true"),
             ("annualSalary.max", max_salary),
             ("annualSalary.min", min_salary),
-            ("commissionFeePercentage", 2)
+            ("commissionFeePercentage", 3),
         ]
 
         for loc in desired_locations:
@@ -76,6 +76,22 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
         if categories:
             for cat in categories:
                 params.append(("occupations", cat),)
+
+        # 件数確認
+        cnt_res = requests.get(api_job_serach_url, headers=headers, params=params)
+        if cnt_res.status_code != 200 and cnt_res.status_code != 201:
+            print("求人件数取得に失敗しました。Error:", cnt_res.text)
+            exit(1) # Stop execution on job search failure
+        cnt = cnt_res.json()["total"]
+
+        # 20件は担保する
+        if cnt < 20:
+            # 辞書に変換
+            params_dict = dict(params)
+            # 書き換え
+            params_dict["commissionFeePercentage"] = 2
+            # 最後に再度リスト形式に戻す
+            params = list(params_dict.items())
 
         # リクエスト送信
         response = requests.get(api_job_serach_url, headers=headers, params=params)
@@ -212,7 +228,7 @@ def job_count(token, keyword, keyword_category, keyword_option, min_salary, max_
         data = response.json()["total"]
         return data
     else:
-        print("求人取得に失敗しました。Error:", response.text)
+        print("求人件数取得に失敗しました。Error:", response.text)
         exit(1) # Stop execution on job search failure
 
 
