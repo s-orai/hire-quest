@@ -135,7 +135,7 @@ def create_job_df(json_data):
     df["昨年度賞与実績"] = df["actualBonusPaymentsLastYear"].map(actual_bonus_payments)
     df["インセンティブ"] = df["incentive"].map(incentive)
 
-    df["勤務形態"] = df.apply(lambda row: collect_values(row, "workstyles", workstyle), axis=1)
+    df["勤務形態"] = df.apply(lambda row: collect_values(row, "workStyles", workstyle), axis=1)
 
     df["転勤の可能性"] = df["relocationProbability"].map(relocation)
     df["勤務時間"] = df.apply(lambda row: f"{row["workHours.start"]}~{row["workHours.end"]}", axis=1)
