@@ -3,10 +3,12 @@ import pandas as pd
 import json
 import streamlit as st
 from definitions import incentive, actual_bonus_payments, prefectures_reverse, num_of_bonuses, workstyle, relocation, positions, commission_earned_at, night_time_shift, overtime, job_categories
+from ai_matching import call_api
 
 # APIのエンドポイント
 api_login_url = st.secrets["api_url"]["session"]
 api_job_serach_url = st.secrets["api_url"]["job_search"]
+api_logout_url = st.secrets["api_url"]["delete_session"]
 login_email = st.secrets["login_user"]["email"]
 login_password = st.secrets["login_user"]["password"]
 
@@ -24,7 +26,7 @@ def login_to_api():
     response = requests.post(api_login_url, json=payload)
 
     # ステータスコード確認
-    print("Status Code:", response.status_code)
+    print("login Status Code:", response.status_code)
 
     # JSONデータを取得
     if response.status_code == 200 or response.status_code == 201:
@@ -97,7 +99,7 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
         response = requests.get(api_job_serach_url, headers=headers, params=params)
 
         # ステータスコード確認
-        print("Status Code:", response.status_code)
+        print("job_search Status Code:", response.status_code)
 
         if response.status_code != 200 and response.status_code != 201:
             print("求人取得に失敗しました。Error:", response.text)
@@ -136,16 +138,10 @@ def flatten_json(y, prefix=''):
         out[prefix[:-1]] = y  # 最後のドットを除去
     return out
 
-def create_job_df(json_data):
+def format_job_df(df):
     """
-    Creates a job list from the JSON data.
+    Format a job list from the JSON data.
     """
-    if not json_data:
-        print("Error: No job data to process. Exiting.")
-        exit(1)
-    # JSONリストをフラット化
-    flat_data = [flatten_json(d) for d in json_data]
-    df = pd.DataFrame(flat_data)
 
     df["職種"] = df["occupations.main"].map(job_categories)
     df["想定年収"] = df.apply(lambda row: f"{row["expectedAnnualSalary.min"]}万円~{row["expectedAnnualSalary.max"]}万円", axis=1)
@@ -201,7 +197,7 @@ def job_count(token, keyword, keyword_category, keyword_option, min_salary, max_
         ("selectionDaysIncludingDuringMeasurement", "true"),
         ("annualSalary.max", max_salary),
         ("annualSalary.min", min_salary),
-        ("commissionFeePercentage", 2),
+        ("commissionFeePercentage", 3),
     ]
 
     for loc in desired_locations:
@@ -218,17 +214,37 @@ def job_count(token, keyword, keyword_category, keyword_option, min_salary, max_
             params.append(("occupations", cat),)
 
     # リクエスト送信
-    response = requests.get(api_job_serach_url, headers=headers, params=params)
+    res = requests.get(api_job_serach_url, headers=headers, params=params)
+    # ステータスコード確認
+    print("job_count Status Code:", res.status_code)
+    if res.status_code != 200 and res.status_code != 201:
+        print("求人件数取得に失敗しました。Error:", res.text)
+        exit(1) # Stop execution on job search failure
+
+    cnt = res.json()["total"]
+
+    if cnt >= 20:
+        return cnt
+
+    # 20件は担保する
+    # 辞書に変換
+    params_dict = dict(params)
+    # 書き換え
+    params_dict["commissionFeePercentage"] = 2
+    # 最後に再度リスト形式に戻す
+    params = list(params_dict.items())
+
+    res = requests.get(api_job_serach_url, headers=headers, params=params)
 
     # ステータスコード確認
-    print("Status Code:", response.status_code)
+    print("job_count Status Code:", res.status_code)
 
     # JSONデータを取得
-    if response.status_code == 200 or response.status_code == 201:
-        data = response.json()["total"]
-        return data
+    if res.status_code == 200 or res.status_code == 201:
+        cnt = res.json()["total"]
+        return cnt
     else:
-        print("求人件数取得に失敗しました。Error:", response.text)
+        print("求人件数取得に失敗しました。Error:", res.text)
         exit(1) # Stop execution on job search failure
 
 
@@ -266,3 +282,63 @@ def format_commission(row):
         return f"理論年収×{fee}%"
     else:
         return f"{fee:,}円"
+
+def logout(token):
+    headers = {
+        "x-circus-authentication-token": token
+    }
+    # リクエスト送信
+    response = requests.get(api_logout_url, headers=headers)
+
+    # ステータスコード確認
+    if response.status_code != 200 and response.status_code != 201:
+        print("ログアウトに失敗しました。Error:", response.text)
+    else:
+        print("ログアウトsuccess!!")
+
+def sort(job_years, df):
+    print(f"job_years: {not job_years}")
+    print(f"job_years: {job_years}")
+    # 経験職種情報がない場合は、feeでのソートのみ
+    if not job_years:
+        print("職種情報がないのでこちらを通っているはず")
+        sorted_ids = sort_fee(df)
+
+        df_sorted = df.set_index("id").loc[sorted_ids].reset_index()
+        return df_sorted
+
+    # aiが書類通過率を判定
+    matching_json = call_api(job_years, df)
+
+    # ---- 重複除去&ソート処理 ----
+    # 書類通過率が高い順に並んでいる前提（AI側でソートしている想定）
+    seen = set() # 初めて出てきたIDを管理
+    sorted_ids = []
+
+    for group in matching_json:
+        # 重複除去
+        unique_ids = [] # rateごとのID保持する
+        for _id in group["ids"]:
+            print(f"id: {_id}, 判定: {_id not in seen}")
+            if _id not in seen:  # 初めて出てきたIDなら採用
+                seen.add(_id)
+                unique_ids.append(_id)
+            # すでに出たIDはスキップ（＝高いレートの方に残る）
+        if unique_ids:
+            # ソート（commissionFeeの降順）
+            sub_ids = sort_fee(df, unique_ids)
+            sorted_ids.extend(sub_ids)
+
+    # --- AIに出てこなかった残りのIDを最後に追加 ---
+    remaining_ids = df.loc[~df["id"].isin(sorted_ids), "id"].tolist()
+    remaining_ids_sort = sort_fee(df, remaining_ids)
+    sorted_ids.extend(remaining_ids_sort)
+
+    df_sorted = df.set_index("id").loc[sorted_ids].reset_index()
+    return df_sorted
+
+def sort_fee(df, ids = []):
+    if ids:
+        df = df[df["id"].isin(ids)]
+    ids_sort = df.sort_values("commissionFee.fee", ascending=False)["id"].tolist()
+    return ids_sort
