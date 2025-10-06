@@ -48,6 +48,44 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
 
     qjson = {"option": keyword_category, "keyword": keyword, "logicType": keyword_option}
 
+    fixed_params = [
+        ("qJson", json.dumps(qjson, ensure_ascii=False)),
+        ("selectionDaysIncludingDuringMeasurement", "true"),
+        ("annualSalary.max", max_salary),
+        ("annualSalary.min", min_salary),
+        ("commissionFeePercentage", 3),
+    ]
+
+    for loc in desired_locations:
+        fixed_params.append(("prefectures", loc),)
+
+    for loc in holidays:
+        fixed_params.append(("holidays", loc),)
+
+    for loc in works:
+        fixed_params.append(("workEnvironments", loc),)
+
+    if categories:
+        for cat in categories:
+            fixed_params.append(("occupations", cat),)
+
+    # 件数確認
+    cnt_res = requests.get(api_job_serach_url, headers=headers, params=fixed_params)
+    if cnt_res.status_code != 200 and cnt_res.status_code != 201:
+        print("求人件数取得に失敗しました。Error:", cnt_res.text)
+        exit(1) # Stop execution on job search failure
+    cnt = cnt_res.json()["total"]
+    print(f"cnt: {cnt}")
+
+    # 20件は担保する
+    if cnt < 20:
+        # 辞書に変換
+        params_dict = dict(fixed_params)
+        # 書き換え
+        params_dict["commissionFeePercentage"] = 2
+        # 最後に再度リスト形式に戻す
+        fixed_params = list(params_dict.items())
+
     jobs = []
     offset = 0
     limit = 25  # 1ページあたりの取得件数
@@ -56,44 +94,12 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
         params = [
             ("limit", limit),
             ("offset", offset),
-            ("order", "desc"),
-            ("orderBy", "recommendScore"),
             ("page", (offset // limit) + 1),
-            ("qJson", json.dumps(qjson, ensure_ascii=False)),
-            ("selectionDaysIncludingDuringMeasurement", "true"),
-            ("annualSalary.max", max_salary),
-            ("annualSalary.min", min_salary),
-            ("commissionFeePercentage", 3),
         ]
+        params.extend(fixed_params)
 
-        for loc in desired_locations:
-            params.append(("prefectures", loc),)
-
-        for loc in holidays:
-            params.append(("holidays", loc),)
-
-        for loc in works:
-            params.append(("workEnvironments", loc),)
-
-        if categories:
-            for cat in categories:
-                params.append(("occupations", cat),)
-
-        # 件数確認
-        cnt_res = requests.get(api_job_serach_url, headers=headers, params=params)
-        if cnt_res.status_code != 200 and cnt_res.status_code != 201:
-            print("求人件数取得に失敗しました。Error:", cnt_res.text)
-            exit(1) # Stop execution on job search failure
-        cnt = cnt_res.json()["total"]
-
-        # 20件は担保する
-        if cnt < 20:
-            # 辞書に変換
-            params_dict = dict(params)
-            # 書き換え
-            params_dict["commissionFeePercentage"] = 2
-            # 最後に再度リスト形式に戻す
-            params = list(params_dict.items())
+        print(f"params: {params}")
+        print(f"page: {(offset // limit) + 1}")
 
         # リクエスト送信
         response = requests.get(api_job_serach_url, headers=headers, params=params)
@@ -297,11 +303,8 @@ def logout(token):
         print("ログアウトsuccess!!")
 
 def sort(job_years, df):
-    print(f"job_years: {not job_years}")
-    print(f"job_years: {job_years}")
     # 経験職種情報がない場合は、feeでのソートのみ
     if not job_years:
-        print("職種情報がないのでこちらを通っているはず")
         sorted_ids = sort_fee(df)
 
         df_sorted = df.set_index("id").loc[sorted_ids].reset_index()
@@ -319,7 +322,6 @@ def sort(job_years, df):
         # 重複除去
         unique_ids = [] # rateごとのID保持する
         for _id in group["ids"]:
-            print(f"id: {_id}, 判定: {_id not in seen}")
             if _id not in seen:  # 初めて出てきたIDなら採用
                 seen.add(_id)
                 unique_ids.append(_id)

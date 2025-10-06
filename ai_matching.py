@@ -1,7 +1,6 @@
 from openai import OpenAI
 import streamlit as st
 import json
-from pprint import pprint
 
 api_key = st.secrets["open_ai"]["api_key"]
 client = OpenAI(api_key=api_key)
@@ -16,7 +15,6 @@ def call_api(candidate_dict, jobs_df):
     # 日本語そのまま保持
     jobs_text = json.dumps(json_data, ensure_ascii=False, indent=2)
 
-    print("aiにこれから話しかけます")
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -71,65 +69,8 @@ def call_api(candidate_dict, jobs_df):
         # # 余分な文字列を削除
         cleaned_res = res.replace('```json', '').replace('```', '').strip()
         parsed_json = json.loads(cleaned_res)
-        pprint(parsed_json)
         return parsed_json
     except json.JSONDecodeError as e:
         print(f"JSON Parse Error: {str(e)}")
         print("Invalid JSON content:", res)
         raise
-
-
-import pandas as pd
-
-def example():
-    data = {
-        "job_id": [1, 2, 3, 4],
-        "title": ["エンジニア", "デザイナー", "営業", "営業2"],
-        "requirements": [
-            "Pythonの経験3年以上",
-            "Figmaを用いたUI設計経験",
-            "法人営業経験5年以上",
-            "法人営業経験5年以上"
-        ]
-    }
-    df = pd.DataFrame(data)
-    candidate_dict = {"エンジニア": 3, "営業": 5, "デザイナー": 2}
-
-    candidate_text = json.dumps(candidate_dict, ensure_ascii=False)
-    print(f"candidate_text: {candidate_text}")
-    # JSONに変換する（job_idをキーにすると便利）
-    json_data = df[["job_id", "requirements"]].to_dict(orient="records")
-    # 日本語そのまま保持
-    jobs_text = json.dumps(json_data, ensure_ascii=False, indent=2)
-    print(f"jobs_text: {jobs_text}")
-    scores = []
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role":"developer","content":f"""あなたはプロの人材エージェントです。
-            求職者の職種・年数と求人の応募必須要件を照らし合わせて、合格率の高い順に求人をソートしてください。
-            出力は JSON 形式で、書類通過率と求人ID のjsonリストのみを返してください。
-            同じ書類通過率の場合は、まとめてください。
-            """},
-            {"role":"user","content":f"""
-            求職者の職種・年数:
-            {candidate_text}
-            求人の応募必須要件：
-            {jobs_text}
-            """}
-        ],
-        store=True,
-        temperature=0
-    )
-    res = response.choices[0].message.content
-    try:
-        # # 余分な文字列を削除
-        cleaned_res = res.replace('```json', '').replace('```', '').strip()
-        parsed_json = json.loads(cleaned_res)
-        pprint(parsed_json)
-    except json.JSONDecodeError as e:
-        print(f"JSON Parse Error: {str(e)}")
-        print("Invalid JSON content:", res)
-        raise
-
-
