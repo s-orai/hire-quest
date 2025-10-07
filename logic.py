@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import threading
 from collections import deque
+import random
 import pandas as pd
 import json
 import streamlit as st
@@ -137,19 +138,30 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
             ("page", (off // limit) + 1),
         ]
         params.extend(fixed_params)
-        try:
-            print(f"params: {params}")
-            print(f"page: {(off // limit) + 1}")
-            limiter.acquire()
-            response = requests.get(api_job_serach_url, headers=headers, params=params, timeout=20)
-            print("job_search Status Code:", response.status_code)
-            if response.status_code == 200 or response.status_code == 201:
-                return response.json().get("jobs", [])
-            print("求人取得に失敗しました。Error:", response.text)
-            exit(1)
-        except Exception as e:
-            print(f"求人一覧ページ取得中に例外が発生しました。offset={off}, Error:{e}")
-            exit(1)
+        backoff = 0.5
+        for attempt in range(4):  # 0,1,2,3 → 最大4回（初回+リトライ3回）
+            try:
+                print(f"page: {(off // limit) + 1}")
+                limiter.acquire() # レートリミッター発行
+                response = requests.get(api_job_serach_url, headers=headers, params=params, timeout=20)
+                print("job_search Status Code:", response.status_code)
+                if response.status_code == 200 or response.status_code == 201:
+                    return response.json().get("jobs", [])
+                if response.status_code in (429, 500, 502, 503, 504):
+                    # backoff with jitter
+                    sleep_s = backoff * (2 ** attempt) + random.uniform(0, 0.2)
+                    print(f"一時的エラーのためリトライします(status={response.status_code})。{sleep_s:.2f}s待機")
+                    time.sleep(sleep_s)
+                    continue
+                print("求人取得に失敗しました。Error:", response.text)
+                exit(1)
+            except Exception as e:
+                sleep_s = backoff * (2 ** attempt) + random.uniform(0, 0.2)
+                print(f"求人一覧ページ取得で例外発生。offset={off}, attempt={attempt+1}。{sleep_s:.2f}s待機。Error:{e}")
+                time.sleep(sleep_s)
+                continue
+        print(f"求人一覧ページ取得のリトライ上限に到達しました。offset={off}")
+        exit(1)
 
     offsets = list(range(0, cnt, limit))
     with ThreadPoolExecutor(max_workers=min(6, burst)) as executor:
@@ -162,16 +174,27 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
     job_details = []
     # リクエスト送信(詳細情報など) 並列化
     def _fetch_detail(job_id):
-        try:
-            limiter.acquire()
-            response = requests.get(api_job_serach_url, headers=headers, params=[("id", job_id)], timeout=15)
-            if response.status_code == 200 or response.status_code == 201:
-                return response.json()
-            print(f"求人取得に失敗しました。求人ID: {job_id}, Error:{response.text}")
-            return None
-        except Exception as e:
-            print(f"求人詳細取得中に例外が発生しました。求人ID: {job_id}, Error:{e}")
-            return None
+        backoff = 0.5
+        for attempt in range(4):
+            try:
+                limiter.acquire()
+                response = requests.get(api_job_serach_url, headers=headers, params=[("id", job_id)], timeout=15)
+                if response.status_code == 200 or response.status_code == 201:
+                    return response.json()
+                if response.status_code in (429, 500, 502, 503, 504):
+                    sleep_s = backoff * (2 ** attempt) + random.uniform(0, 0.2)
+                    print(f"求人詳細(求人ID:{job_id})で一時的エラー。{sleep_s:.2f}s待機してリトライ (status={response.status_code})")
+                    time.sleep(sleep_s)
+                    continue
+                print(f"求人取得に失敗しました。求人ID: {job_id}, Error:{response.text}")
+                return None
+            except Exception as e:
+                sleep_s = backoff * (2 ** attempt) + random.uniform(0, 0.2)
+                print(f"求人詳細取得(求人ID:{job_id})で例外。attempt={attempt+1}、{sleep_s:.2f}s待機。Error:{e}")
+                time.sleep(sleep_s)
+                continue
+        print(f"求人詳細取得のリトライ上限に到達しました。求人ID:{job_id}")
+        return None
 
     with ThreadPoolExecutor(max_workers=min(8, burst)) as executor:
         futures = [executor.submit(_fetch_detail, job["id"]) for job in jobs]
