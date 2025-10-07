@@ -7,40 +7,82 @@ import random
 import pandas as pd
 import json
 import streamlit as st
+from dataclasses import dataclass
+from typing import Optional, Tuple
 from definitions import incentive, actual_bonus_payments, prefectures_reverse, num_of_bonuses, workstyle, relocation, positions, commission_earned_at, night_time_shift, overtime, job_categories
 from ai_matching import call_api
 
-# APIのエンドポイント
-api_login_url = st.secrets["api_url"]["session"]
-api_job_serach_url = st.secrets["api_url"]["job_search"]
-api_logout_url = st.secrets["api_url"]["delete_session"]
-login_email = st.secrets["login_user"]["email"]
-login_password = st.secrets["login_user"]["password"]
+@dataclass
+class ApiConfig:
+    session_url: str
+    job_search_url: str
+    logout_url: str
+    login_email: str
+    login_password: str
+    # rate limit
+    rps: int = 4
+    burst: int = 4
+    # timeouts
+    default_timeout_seconds: float = 20.0
 
-def login_to_api():
+
+class ApiClient:
+    def __init__(self, config: ApiConfig):
+        self.config = config
+        self.session = requests.Session()
+        self._token: Optional[str] = None
+
+    @property
+    def token(self) -> Optional[str]:
+        return self._token
+
+    def _request(self, method: str, url: str, *, timeout: Optional[float] = None, **kwargs):
+        t = timeout if timeout is not None else self.config.default_timeout_seconds
+        headers = kwargs.pop("headers", {}) or {}
+        if self._token:
+            headers.setdefault("x-circus-authentication-token", self._token)
+        return self.session.request(method, url, headers=headers, timeout=t, **kwargs)
+
+    def login(self) -> str:
+        payload = {"email": self.config.login_email, "password": self.config.login_password}
+        response = self._request("POST", self.config.session_url, json=payload)
+        print("login Status Code:", response.status_code)
+        if response.status_code in (200, 201):
+            data = response.json()
+            self._token = data.get("token")
+            return self._token
+        raise RuntimeError(f"ログインに失敗しました。status={response.status_code}")
+
+    def logout(self) -> None:
+        response = self._request("GET", self.config.logout_url)
+        if response.status_code not in (200, 201):
+            print("ログアウトに失敗しました。Error:", response.text)
+        else:
+            print("ログアウトsuccess!!")
+
+
+def create_api_client_from_secrets() -> ApiClient:
+    api_urls = st.secrets["api_url"]
+    login_user = st.secrets["login_user"]
+    rate_cfg = st.secrets.get("rate_limit", {}) if hasattr(st, "secrets") else {}
+    rps = int(rate_cfg.get("rps", 4))
+    burst = int(rate_cfg.get("burst", rps))
+    cfg = ApiConfig(
+        session_url=api_urls["session"],
+        job_search_url=api_urls["job_search"],
+        logout_url=api_urls["delete_session"],
+        login_email=login_user["email"],
+        login_password=login_user["password"],
+        rps=rps,
+        burst=burst,
+    )
+    return ApiClient(cfg)
+
+def login_to_api(client: ApiClient) -> str:
     """
-    Logs in to the API and returns the authentication token and response data.
+    ApiClient を用いてログインし、トークンを返す。
     """
-    # パラメータ（クエリ文字列）
-    payload = {
-        "email": login_email,
-        "password": login_password
-    }
-
-    # リクエスト送信
-    response = requests.post(api_login_url, json=payload)
-
-    # ステータスコード確認
-    print("login Status Code:", response.status_code)
-
-    # JSONデータを取得
-    if response.status_code == 200 or response.status_code == 201:
-        data = response.json()
-        token = data.get("token")
-        return token
-    else:
-        print("ログインに失敗しました。Error:", response.text)
-        exit(1) # Stop execution on login failure
+    return client.login()
 
 class RateLimiter:
     """
@@ -67,68 +109,67 @@ class RateLimiter:
             if wait > 0:
                 time.sleep(wait)
 
-def _get_rate_config():
-    try:
-        cfg = st.secrets.get("rate_limit", {})
-        rps = int(cfg.get("rps", 4))
-        burst = int(cfg.get("burst", rps))
-        return rps, burst
-    except Exception:
-        return 4, 4
+def _get_rate_config(client: ApiClient) -> Tuple[int, int]:
+    return client.config.rps, client.config.burst
 
-def job_search(token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories, holidays, works):
-    """
-    Searches for jobs using the API and returns all job data across all pages.
-    """
 
-    headers = {
-        "x-circus-authentication-token": token
-    }
+def _build_query_json(keyword, keyword_category, keyword_option):
+    return {"option": keyword_category, "keyword": keyword, "logicType": keyword_option}
 
-    qjson = {"option": keyword_category, "keyword": keyword, "logicType": keyword_option}
 
-    fixed_params = [
+def _append_multi(params, key, values):
+    if not values:
+        return
+    for v in values:
+        params.append((key, v))
+
+
+def _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, holidays, works, commission_fee_percentage: int):
+    params = [
         ("qJson", json.dumps(qjson, ensure_ascii=False)),
         ("selectionDaysIncludingDuringMeasurement", "true"),
         ("annualSalary.max", max_salary),
         ("annualSalary.min", min_salary),
-        ("commissionFeePercentage", 3),
+        ("commissionFeePercentage", commission_fee_percentage),
     ]
+    _append_multi(params, "prefectures", desired_locations)
+    _append_multi(params, "holidays", holidays)
+    _append_multi(params, "workEnvironments", works)
+    _append_multi(params, "occupations", categories)
+    return params
 
-    for loc in desired_locations:
-        fixed_params.append(("prefectures", loc),)
 
-    for loc in holidays:
-        fixed_params.append(("holidays", loc),)
+def _count_jobs(client: ApiClient, params) -> int:
+    res = client._request("GET", client.config.job_search_url, params=params)
+    print("job_count Status Code:", res.status_code)
+    if res.status_code not in (200, 201):
+        raise RuntimeError(f"求人件数取得に失敗しました。status={res.status_code}")
+    return res.json()["total"]
 
-    for loc in works:
-        fixed_params.append(("workEnvironments", loc),)
+def job_search(client: ApiClient, token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories, holidays, works):
+    """
+    Searches for jobs using the API and returns all job data across all pages.
+    """
 
-    if categories:
-        for cat in categories:
-            fixed_params.append(("occupations", cat),)
+    # set token on client for subsequent requests
+    if token:
+        client._token = token
+
+    qjson = _build_query_json(keyword, keyword_category, keyword_option)
+    fixed_params = _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, holidays, works, 3)
 
     # 件数確認
-    cnt_res = requests.get(api_job_serach_url, headers=headers, params=fixed_params)
-    if cnt_res.status_code != 200 and cnt_res.status_code != 201:
-        print("求人件数取得に失敗しました。Error:", cnt_res.text)
-        exit(1) # Stop execution on job search failure
-    cnt = cnt_res.json()["total"]
+    cnt = _count_jobs(client, fixed_params)
 
     # 20件は担保する
     if cnt < 20:
-        # 辞書に変換
-        params_dict = dict(fixed_params)
-        # 書き換え
-        params_dict["commissionFeePercentage"] = 2
-        # 最後に再度リスト形式に戻す
-        fixed_params = list(params_dict.items())
+        fixed_params = _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, holidays, works, 2)
 
     jobs = []
     limit = 25  # 1ページあたりの取得件数
 
     # ページ単位取得の並列化
-    rps, burst = _get_rate_config()
+    rps, burst = _get_rate_config(client)
     limiter = RateLimiter(rps, burst)
 
     def _fetch_page(off):
@@ -143,7 +184,7 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
             try:
                 print(f"page: {(off // limit) + 1}")
                 limiter.acquire() # レートリミッター発行
-                response = requests.get(api_job_serach_url, headers=headers, params=params, timeout=20)
+                response = client._request("GET", client.config.job_search_url, params=params, timeout=20)
                 print("job_search Status Code:", response.status_code)
                 if response.status_code == 200 or response.status_code == 201:
                     return response.json().get("jobs", [])
@@ -178,7 +219,7 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
         for attempt in range(4):
             try:
                 limiter.acquire()
-                response = requests.get(api_job_serach_url, headers=headers, params=[("id", job_id)], timeout=15)
+                response = client._request("GET", client.config.job_search_url, params=[("id", job_id)], timeout=15)
                 if response.status_code == 200 or response.status_code == 201:
                     return response.json()
                 if response.status_code in (429, 500, 502, 503, 504):
@@ -224,7 +265,7 @@ def format_job_df(df):
     """
 
     df["職種"] = df["occupations.main"].map(job_categories)
-    df["想定年収"] = df.apply(lambda row: f"{row["expectedAnnualSalary.min"]}万円~{row["expectedAnnualSalary.max"]}万円", axis=1)
+    df["想定年収"] = df.apply(lambda row: f"{row['expectedAnnualSalary.min']}万円~{row['expectedAnnualSalary.max']}万円", axis=1)
     df["月給"] = df.apply(
         lambda row: "" if pd.isna(row["expectedMonthlySalary.min"]) and pd.isna(row["expectedMonthlySalary.max"]) else f"{row['expectedMonthlySalary.min']}万円~{row['expectedMonthlySalary.max']}万円",
         axis=1,
@@ -240,7 +281,7 @@ def format_job_df(df):
     df["勤務形態"] = df.apply(lambda row: collect_values(row, "workStyles", workstyle), axis=1)
 
     df["転勤の可能性"] = df["relocationProbability"].map(relocation)
-    df["勤務時間"] = df.apply(lambda row: f"{row["workHours.start"]}~{row["workHours.end"]}", axis=1)
+    df["勤務時間"] = df.apply(lambda row: f"{row['workHours.start']}~{row['workHours.end']}", axis=1)
     df["夜間勤務"] = df["nightTimeShift"].map(night_time_shift)
     df["月刊平均残業時間"] = df["averageOvertime"].map(overtime)
     df["成果報酬金額"] = df.apply(format_commission, axis=1)
@@ -264,71 +305,25 @@ def format_job_df(df):
 
     return df
 
-def job_count(token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories, holidays, works):
+def job_count(client: ApiClient, token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories, holidays, works):
     """
     Searches for jobs using the API and returns the job count.
     """
 
-    headers = {
-        "x-circus-authentication-token": token
-    }
+    if token:
+        client._token = token
 
-    qjson = {"option": keyword_category, "keyword": keyword, "logicType": keyword_option}
-
-    params = [
-        ("qJson", json.dumps(qjson, ensure_ascii=False)),
-        ("selectionDaysIncludingDuringMeasurement", "true"),
-        ("annualSalary.max", max_salary),
-        ("annualSalary.min", min_salary),
-        ("commissionFeePercentage", 3),
-    ]
-
-    for loc in desired_locations:
-        params.append(("prefectures", loc),)
-
-    for loc in holidays:
-        params.append(("holidays", loc),)
-
-    for loc in works:
-        params.append(("workEnvironments", loc),)
-
-    if categories:
-        for cat in categories:
-            params.append(("occupations", cat),)
-
-    # リクエスト送信
-    res = requests.get(api_job_serach_url, headers=headers, params=params)
-    # ステータスコード確認
-    print("job_count Status Code:", res.status_code)
-    if res.status_code != 200 and res.status_code != 201:
-        print("求人件数取得に失敗しました。Error:", res.text)
-        exit(1) # Stop execution on job search failure
-
-    cnt = res.json()["total"]
+    qjson = _build_query_json(keyword, keyword_category, keyword_option)
+    params = _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, holidays, works, 3)
+    cnt = _count_jobs(client, params)
 
     if cnt >= 20:
         return cnt
 
-    # 20件は担保する
-    # 辞書に変換
-    params_dict = dict(params)
-    # 書き換え
-    params_dict["commissionFeePercentage"] = 2
-    # 最後に再度リスト形式に戻す
-    params = list(params_dict.items())
-
-    res = requests.get(api_job_serach_url, headers=headers, params=params)
-
-    # ステータスコード確認
-    print("job_count Status Code:", res.status_code)
-
-    # JSONデータを取得
-    if res.status_code == 200 or res.status_code == 201:
-        cnt = res.json()["total"]
-        return cnt
-    else:
-        print("求人件数取得に失敗しました。Error:", res.text)
-        exit(1) # Stop execution on job search failure
+    # 20件は担保する → 手数料割合2で再計算
+    params = _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, holidays, works, 2)
+    cnt = _count_jobs(client, params)
+    return cnt
 
 
 def collect_values(row, prefix: str, mapping: dict, suffix: str = "", sep: str = "、"):
@@ -365,19 +360,6 @@ def format_commission(row):
         return f"理論年収×{fee}%"
     else:
         return f"{fee:,}円"
-
-def logout(token):
-    headers = {
-        "x-circus-authentication-token": token
-    }
-    # リクエスト送信
-    response = requests.get(api_logout_url, headers=headers)
-
-    # ステータスコード確認
-    if response.status_code != 200 and response.status_code != 201:
-        print("ログアウトに失敗しました。Error:", response.text)
-    else:
-        print("ログアウトsuccess!!")
 
 def sort(job_years, df):
     # 経験職種情報がない場合は、feeでのソートのみ
