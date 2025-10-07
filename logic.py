@@ -1,4 +1,8 @@
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+import threading
+from collections import deque
 import pandas as pd
 import json
 import streamlit as st
@@ -36,6 +40,40 @@ def login_to_api():
     else:
         print("ログインに失敗しました。Error:", response.text)
         exit(1) # Stop execution on login failure
+
+class RateLimiter:
+    """
+    1秒あたりの最大リクエスト数(rps)とバースト(burst)を制御する簡易レートリミッタ。
+    マルチスレッド対応。
+    """
+    def __init__(self, rps: int, burst: int | None = None):
+        self.rps = max(1, int(rps))
+        self.burst = int(burst) if burst is not None else self.rps
+        self.timestamps = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        while True:
+            now = time.monotonic()
+            with self._lock:
+                # 1秒より古いタイムスタンプを捨てる
+                while self.timestamps and now - self.timestamps[0] > 1.0:
+                    self.timestamps.popleft()
+                if len(self.timestamps) < self.burst:
+                    self.timestamps.append(now)
+                    return
+                wait = 1.0 - (now - self.timestamps[0])
+            if wait > 0:
+                time.sleep(wait)
+
+def _get_rate_config():
+    try:
+        cfg = st.secrets.get("rate_limit", {})
+        rps = int(cfg.get("rps", 4))
+        burst = int(cfg.get("burst", rps))
+        return rps, burst
+    except Exception:
+        return 4, 4
 
 def job_search(token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories, holidays, works):
     """
@@ -75,7 +113,6 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
         print("求人件数取得に失敗しました。Error:", cnt_res.text)
         exit(1) # Stop execution on job search failure
     cnt = cnt_res.json()["total"]
-    print(f"cnt: {cnt}")
 
     # 20件は担保する
     if cnt < 20:
@@ -87,47 +124,61 @@ def job_search(token, keyword, keyword_category, keyword_option, min_salary, max
         fixed_params = list(params_dict.items())
 
     jobs = []
-    offset = 0
     limit = 25  # 1ページあたりの取得件数
 
-    while True:
+    # ページ単位取得の並列化
+    rps, burst = _get_rate_config()
+    limiter = RateLimiter(rps, burst)
+
+    def _fetch_page(off):
         params = [
             ("limit", limit),
-            ("offset", offset),
-            ("page", (offset // limit) + 1),
+            ("offset", off),
+            ("page", (off // limit) + 1),
         ]
         params.extend(fixed_params)
-
-        print(f"params: {params}")
-        print(f"page: {(offset // limit) + 1}")
-
-        # リクエスト送信
-        response = requests.get(api_job_serach_url, headers=headers, params=params)
-
-        # ステータスコード確認
-        print("job_search Status Code:", response.status_code)
-
-        if response.status_code != 200 and response.status_code != 201:
+        try:
+            print(f"params: {params}")
+            print(f"page: {(off // limit) + 1}")
+            limiter.acquire()
+            response = requests.get(api_job_serach_url, headers=headers, params=params, timeout=20)
+            print("job_search Status Code:", response.status_code)
+            if response.status_code == 200 or response.status_code == 201:
+                return response.json().get("jobs", [])
             print("求人取得に失敗しました。Error:", response.text)
-            exit(1) # Stop execution on job search failure
+            exit(1)
+        except Exception as e:
+            print(f"求人一覧ページ取得中に例外が発生しました。offset={off}, Error:{e}")
+            exit(1)
 
-        # JSONデータを取得
-        data = response.json()["jobs"]
-        if not data:
-            break  # データがもうない場合はループを終了
-        jobs.extend(data)
-        offset += limit
+    offsets = list(range(0, cnt, limit))
+    with ThreadPoolExecutor(max_workers=min(6, burst)) as executor:
+        futures = [executor.submit(_fetch_page, off) for off in offsets]
+        for future in as_completed(futures):
+            data = future.result()
+            if data:
+                jobs.extend(data)
 
     job_details = []
-    # リクエスト送信(詳細情報など)
-    for job in jobs:
-        job_id = job["id"]
-        response = requests.get(api_job_serach_url, headers=headers, params=[("id", job_id)])
-
-        if response.status_code != 200 and response.status_code != 201:
+    # リクエスト送信(詳細情報など) 並列化
+    def _fetch_detail(job_id):
+        try:
+            limiter.acquire()
+            response = requests.get(api_job_serach_url, headers=headers, params=[("id", job_id)], timeout=15)
+            if response.status_code == 200 or response.status_code == 201:
+                return response.json()
             print(f"求人取得に失敗しました。求人ID: {job_id}, Error:{response.text}")
-            continue
-        job_details.append(response.json())
+            return None
+        except Exception as e:
+            print(f"求人詳細取得中に例外が発生しました。求人ID: {job_id}, Error:{e}")
+            return None
+
+    with ThreadPoolExecutor(max_workers=min(8, burst)) as executor:
+        futures = [executor.submit(_fetch_detail, job["id"]) for job in jobs]
+        for future in as_completed(futures):
+            detail = future.result()
+            if detail:
+                job_details.append(detail)
 
     return job_details
 
@@ -151,7 +202,10 @@ def format_job_df(df):
 
     df["職種"] = df["occupations.main"].map(job_categories)
     df["想定年収"] = df.apply(lambda row: f"{row["expectedAnnualSalary.min"]}万円~{row["expectedAnnualSalary.max"]}万円", axis=1)
-    df["月給"] = df.apply(lambda row: f"{row["expectedMonthlySalary.min"]}万円~{row["expectedMonthlySalary.max"]}万円", axis=1)
+    df["月給"] = df.apply(
+        lambda row: "" if pd.isna(row["expectedMonthlySalary.min"]) and pd.isna(row["expectedMonthlySalary.max"]) else f"{row['expectedMonthlySalary.min']}万円~{row['expectedMonthlySalary.max']}万円",
+        axis=1,
+    )
 
     df["勤務地"] = df.apply(lambda row: collect_values(row, "addresses", prefectures_reverse, "prefecture"), axis=1)
     df["職位"] = df.apply(lambda row: collect_values(row, "positions", positions), axis=1)
@@ -166,7 +220,7 @@ def format_job_df(df):
     df["勤務時間"] = df.apply(lambda row: f"{row["workHours.start"]}~{row["workHours.end"]}", axis=1)
     df["夜間勤務"] = df["nightTimeShift"].map(night_time_shift)
     df["月刊平均残業時間"] = df["averageOvertime"].map(overtime)
-    df['成果報酬金額'] = df.apply(format_commission, axis=1)
+    df["成果報酬金額"] = df.apply(format_commission, axis=1)
     df["成果地点"] = df["commissionEarnedAt"].map(commission_earned_at)
 
     # 抽出項目を絞り込み
