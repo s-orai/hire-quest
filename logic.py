@@ -124,13 +124,14 @@ def _append_multi(params, key, values):
         params.append((key, v))
 
 
-def _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, holidays, works, commission_fee_percentage: int):
+def _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, age, holidays, works, commission_fee_percentage: int):
     params = [
         ("qJson", json.dumps(qjson, ensure_ascii=False)),
         ("selectionDaysIncludingDuringMeasurement", "true"),
         ("annualSalary.max", max_salary),
         ("annualSalary.min", min_salary),
         ("commissionFeePercentage", commission_fee_percentage),
+        ("age", age)
     ]
     _append_multi(params, "prefectures", desired_locations)
     _append_multi(params, "holidays", holidays)
@@ -146,7 +147,7 @@ def _count_jobs(client: ApiClient, params) -> int:
         raise RuntimeError(f"求人件数取得に失敗しました。status={res.status_code}")
     return res.json()["total"]
 
-def job_search(client: ApiClient, token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories, holidays, works):
+def job_search(client: ApiClient, token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories, age, holidays, works):
     """
     Searches for jobs using the API and returns all job data across all pages.
     """
@@ -156,14 +157,15 @@ def job_search(client: ApiClient, token, keyword, keyword_category, keyword_opti
         client._token = token
 
     qjson = _build_query_json(keyword, keyword_category, keyword_option)
-    fixed_params = _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, holidays, works, 3)
+    fixed_params = _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, age, holidays, works, 3)
 
     # 件数確認
     cnt = _count_jobs(client, fixed_params)
 
     # 20件は担保する
     if cnt < 20:
-        fixed_params = _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, holidays, works, 2)
+        fixed_params = _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, age, holidays, works, 2)
+        cnt = _count_jobs(client, fixed_params)
 
     jobs = []
     limit = 25  # 1ページあたりの取得件数
@@ -305,7 +307,7 @@ def format_job_df(df):
 
     return df
 
-def job_count(client: ApiClient, token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories, holidays, works):
+def job_count(client: ApiClient, token, keyword, keyword_category, keyword_option, min_salary, max_salary, desired_locations, categories, age, holidays, works):
     """
     Searches for jobs using the API and returns the job count.
     """
@@ -314,14 +316,14 @@ def job_count(client: ApiClient, token, keyword, keyword_category, keyword_optio
         client._token = token
 
     qjson = _build_query_json(keyword, keyword_category, keyword_option)
-    params = _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, holidays, works, 3)
+    params = _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, age, holidays, works, 3)
     cnt = _count_jobs(client, params)
 
     if cnt >= 20:
         return cnt
 
     # 20件は担保する → 手数料割合2で再計算
-    params = _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, holidays, works, 2)
+    params = _build_search_params(qjson, min_salary, max_salary, desired_locations, categories, age, holidays, works, 2)
     cnt = _count_jobs(client, params)
     return cnt
 

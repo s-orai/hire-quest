@@ -54,6 +54,10 @@ def show_search_console():
             allowClear=True,
             key="desired"
         )
+        # 年齢
+        age = st.number_input('年齢', 16, 100, None, 1, placeholder='年齢を入力', width=200)
+        st.text("歳で応募可能")
+
         # 休日
         selected_holidays = st.multiselect('休日', list(holidays.keys()))
         holiday_values = [holidays[loc] for loc in selected_holidays]
@@ -96,7 +100,7 @@ def show_search_console():
           token = login_to_api(client)
           if token:
               try:
-                  count = job_count(client, token, keyword, keyword_category, keyword_option, min_salary, max_salary, location_values, selected_categories, holiday_values, work_values)
+                  count = job_count(client, token, keyword, keyword_category, keyword_option, min_salary, max_salary, location_values, selected_categories, age, holiday_values, work_values)
                   st.write(f"検索結果数: {count}件")
               except Exception as e:
                   st.write("検索結果数の取得に失敗しました。")
@@ -105,7 +109,7 @@ def show_search_console():
           if st.button('検索'):
             with st.spinner("求人リストを取得中..."):
               if token:
-                  job_data = job_search(client, token, keyword, keyword_category, keyword_option, min_salary, max_salary, location_values, selected_categories, holiday_values, work_values)
+                  job_data = job_search(client, token, keyword, keyword_category, keyword_option, min_salary, max_salary, location_values, selected_categories, age, holiday_values, work_values)
                   if job_data:
                         flat_data = [flatten_json(d) for d in job_data]
                         df = pd.DataFrame(flat_data)
